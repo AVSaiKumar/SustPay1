@@ -1,5 +1,5 @@
 
-# SustPay1
+# SustPay
 # Offline Payment Transaction iOS App
 
 **Overview**
@@ -230,4 +230,26 @@ here is the the video demo link of FligthPay - https://youtu.be/2HTEZrO1AZQ?si=g
 
 **For further assistance or inquiries, please refer to the project's GitHub repository or contact ms2204101012@iiti.ac.in.**
 **NOte: Incase any issue in running the sign.py file to load balance from the bank, follow these steps: provide your public key, onIndex, present on Screen (initially '0'), and the desired amount. Email these details to ms2204101012@iiti.ac.in. We will manually generate a signature for you and email back to you. Afterwards, you can use this signature to load your balance.**
+ 
+ 
+ # Troubleshooting Project Issues**
 
+**If you encounter difficulty running the project due to platform or build dependencies, please follow these steps:**
+
+1. **Locate the 'code.txt' file:**
+   - Find the 'code.txt' file within this repository.
+
+2. **Copy the code:**
+   - Open the 'code.txt' file and copy its entire contents.
+
+3. **Create a new Xcode project:**
+   - Launch Xcode and begin a new project.
+
+4. **Replace 'ContentView.swift':**
+   - Within the new project, find the 'ContentView.swift' file.
+   - Replace its existing content with the code you copied from 'code.txt'.
+
+5. **Run the project:**
+   - Build and run the project in Xcode.
+
+**These steps should effectively address common issues and ensure smooth project execution within Xcode.**
