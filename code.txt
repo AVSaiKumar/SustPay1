@@ -1,0 +1,891 @@
+import SwiftUI
+import Security
+import CryptoKit
+import Foundation
+import CommonCrypto
+
+enum EncryptionError: Error {
+    case encryptionFailed
+}
+
+class SecureEnclaveManager: ObservableObject {
+    @Published var CurrentBalance: String = "0"
+    @Published var onIndex: String = "0"
+    @Published var publicKey: String = ""
+    @Published var offIndex: String = "0"
+    @Published var Gsignature: String = ""
+    var privateKey: SecKey?
+
+    
+    private let publicKeyString = """
+-----BEGIN PUBLIC KEY-----
+MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEq+w6kV1SkMC6a0g+8d/cxEeP7JuG
+5koktsGAf+WFGI5GWK9maV+LMJHL4XKf/dW9ZZV+jqYQMRfkZgG/aIUIuQ==
+-----END PUBLIC KEY-----
+"""
+    
+    //private let encryptedMessageKey = "encryptedMessageKey"
+    private let counterKey = "counterKey"
+    private let onIndexKey = "indexKey"
+    private let offIndexKey = "offIndexKey"
+    
+    init() {
+            // Initialize Keychain items if they don't exist
+            initializeKeychainItems()
+        }
+
+        private func initializeKeychainItems() {
+            
+            privateKey = getPrivateKey()!
+            
+            guard let unwrappedPrivateKey = privateKey else {
+                // Handle the case where privateKey is nil
+                print("Private key is nil.")
+                // You might want to return, throw an error, or handle this case appropriately
+                fatalError("Private key is nil.")
+            }
+            
+
+
+            // Initialize balance if not exists
+            if let existingBalance = loadFromKeychain(key: counterKey),
+               let decryptedData = decryptDataWithPrivateKey(privateKey: unwrappedPrivateKey, data: existingBalance),
+               let initialBalance = Int(decryptedData) {
+                CurrentBalance = String(initialBalance)
+                print("current balance ", CurrentBalance)
+            } else {
+                let initialBalance = 0
+                if let encryptedData = encryptDataWithPublicKey(data: Data("\(initialBalance)".utf8), publicKey: try! SecKeyCopyPublicKey(unwrappedPrivateKey)!) {
+                    saveToKeychain(key: counterKey, value: encryptedData)
+                    print("new balance")
+                }
+            }
+
+            // Initialize on index if not exists
+            if let existingIndex = loadFromKeychain(key: onIndexKey),
+               let decryptedData = decryptDataWithPrivateKey(privateKey: unwrappedPrivateKey, data: existingIndex),
+               let initialIndex = Int(decryptedData) {
+                onIndex = String(initialIndex)
+                print("onindex",onIndex)
+            } else {
+                let initialIndex = 0
+                if let encryptedData = encryptDataWithPublicKey(data: Data("\(initialIndex)".utf8), publicKey: try! SecKeyCopyPublicKey(unwrappedPrivateKey)!) {
+                    saveToKeychain(key: onIndexKey, value: encryptedData)
+                    print("new on index")
+                }
+            }
+
+            // Initialize off index if not exists
+            if let existingOffIndex = loadFromKeychain(key: offIndexKey),
+               let decryptedData = decryptDataWithPrivateKey(privateKey: unwrappedPrivateKey, data: existingOffIndex),
+               let initialOffIndex = Int(decryptedData) {
+                offIndex = "\(initialOffIndex)"
+                print("off index", offIndex)
+            } else {
+                let initialOffIndex = 0
+                if let encryptedData = encryptDataWithPublicKey(data: Data("\(initialOffIndex)".utf8), publicKey: try! SecKeyCopyPublicKey(unwrappedPrivateKey)!) {
+                    saveToKeychain(key: offIndexKey, value: encryptedData)
+                    print("new off index")
+                }
+            }
+            
+            publicKey = getPublicKey()
+            print("public key", publicKey)
+        }
+ /*
+    private func saveToKeychain(data: Data, key: String) {
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrAccount as String: key,
+            kSecValueData as String: data
+        ]
+
+        let status = SecItemAdd(query as CFDictionary, nil)
+        if status != errSecSuccess {
+            print("Error saving to Keychain. Status: \(status)")
+            // Handle the error, throw an exception, or return early
+        }
+    }
+  */
+    
+    func saveToKeychain(key: String, value: Data) -> Bool {
+        let query = [
+            kSecClass as
+     
+    String: kSecClassGenericPassword,
+            kSecAttrAccount as
+     
+    String: key,
+            kSecValueData as
+     
+    String: value
+        ] as [String : Any]
+
+        var status = SecItemAdd(query as CFDictionary, nil)
+
+        if status == errSecDuplicateItem {
+                let attributesToUpdate = [kSecValueData as String: value]
+                status = SecItemUpdate(query as CFDictionary, attributesToUpdate as CFDictionary)
+            }
+
+        guard status == errSecSuccess else {
+            print("Error saving to keychain: \(status)")
+            return false
+        }
+
+        return true
+    }
+
+    func loadFromKeychain(key: String) -> Data? {
+        let query = [
+            kSecClass as
+     
+    String: kSecClassGenericPassword,
+            kSecAttrAccount as
+     
+    String: key,
+            kSecReturnData as
+     
+    String: kCFBooleanTrue!,
+            kSecMatchLimit as
+     
+    String: kSecMatchLimitOne
+        ] as [String : Any]
+
+        var item: CFTypeRef?
+        let status =
+     
+    SecItemCopyMatching(query as
+     
+    CFDictionary, &item)
+
+        guard status == errSecSuccess
+     
+    else {
+            print("Error loading from keychain: \(status)")
+            return nil
+        }
+
+        guard let retrievedData = item as? Data else {
+            print("Unexpected data type retrieved from keychain.")
+            return nil
+        }
+
+        return retrievedData
+    }
+
+    func modifyKeychainData(key: String, newValue: Data) -> Bool {
+        return saveToKeychain(key: key, value: newValue)
+    }
+/*
+    private func loadFromKeychain(key: String) -> Data? {
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrAccount as String: key,
+            kSecReturnData as String: kCFBooleanTrue!
+        ]
+
+        var result: AnyObject?
+        let status = SecItemCopyMatching(query as CFDictionary, &result)
+        if status == errSecSuccess {
+            return result as? Data
+        } else if status == errSecItemNotFound {
+            // Handle the case where the item is not found
+            print("Key not found in Keychain.")
+        } else {
+            // Handle other errors
+            print("Error loading from Keychain. Status: \(status)")
+        }
+
+        return nil
+    }
+ */
+
+    
+    /*
+    func verifyAndIncrementCounterServer(signature: String, dataInput: String, index: String) {
+    
+        //let counter = UserDefaults.standard.integer(forKey: counterKey)
+        guard let unwrappedPrivateKey = privateKey else {
+            // Handle the case where privateKey is nil
+            print("Private key is nil.")
+            // You might want to return, throw an error, or handle this case appropriately
+            fatalError("Private key is nil.")
+        }
+        
+        let ebalance = loadFromKeychain(key: counterKey)!
+        let eindex = loadFromKeychain(key: onIndexKey)!
+        
+        
+        
+        let dbalance = decryptDataWithPrivateKey(privateKey: unwrappedPrivateKey,data: ebalance)!
+        let dindex = decryptDataWithPrivateKey(privateKey: unwrappedPrivateKey, data: eindex)
+        
+        
+        var decryptedix: Int?
+
+        // Optional binding to safely unwrap dindex
+        if let h = dindex {
+            // Try to convert the unwrapped value to Int
+            decryptedix = Int(h)
+        }
+
+        // Check if the conversion was successful and if the index matches
+        if let decryptedIndex = decryptedix, decryptedIndex + 1 != Int(index) {
+            print("index mismatch")
+            return
+        }
+    
+
+        let decryptediBal = Int(dbalance)!
+        print("decryped balance  here",decryptediBal)
+        
+            
+        if verifySignature(signature: signature, dataInput: dataInput, index: index) {
+                    let newCounter = Int(dataInput)! + decryptediBal
+                    //UserDefaults.standard.set(newCounter, forKey: counterKey)
+                    //encryptedMessage = newCounter
+                    
+                    print("new balance incremented by ",newCounter)
+                    CurrentBalance = String(newCounter)
+                    
+                    // Encrypt the new counter with the persistent public key from Secure Enclave
+                        if let encryptedData = encryptDataWithPublicKey(data: Data("\(newCounter)".utf8), publicKey: try SecKeyCopyPublicKey(unwrappedPrivateKey)!) {
+                            // Save the encrypted data to UserDefaults
+                            modifyKeychainData(key: counterKey, data: encryptedData)
+                            //UserDefaults.standard.set(encryptedData, forKey: counterKey)
+                            //print("Encrypted new balance Data:", encryptedData, type(of: encryptedData))
+                        }
+            
+            if let encryptedData = encryptDataWithPublicKey(data: Data("\(decryptedix)".utf8), publicKey: try SecKeyCopyPublicKey(unwrappedPrivateKey)!) {
+                // Save the encrypted data to UserDefaults
+                //UserDefaults.standard.set(encryptedData, forKey: indexKey)
+                modifyKeychainData(key: onIndexKey, data: encryptedData)
+                //print("Encrypted new index Data:", encryptedData, type(of: encryptedData))
+            }
+                }
+        
+        else {
+                    print("Signature verification failed.")
+                }
+    }
+     */
+    
+    func verifyAndIncrementCounterServer(signature: String, dataInput: String, index: String) {
+        
+        guard let unwrappedPrivateKey = privateKey else {
+            // Handle the case where privateKey is nil
+            print("Private key is nil.")
+            // You might want to return, throw an error, or handle this case appropriately
+            fatalError("Private key is nil.")
+        }
+
+        guard let ebalance = loadFromKeychain(key: counterKey),
+              let eindex = loadFromKeychain(key: onIndexKey) else {
+            print("Failed to load data from keychain.")
+            // Handle the case where loading from keychain fails
+            return
+        }
+
+        guard let dbalance = decryptDataWithPrivateKey(privateKey: unwrappedPrivateKey, data: ebalance),
+              let dindex = decryptDataWithPrivateKey(privateKey: unwrappedPrivateKey, data: eindex),
+              let decryptedix = Int(dindex) else {
+            print("Decryption or conversion to Int failed.")
+            // Handle the case where decryption or conversion to Int fails
+            return
+        }
+
+        // Check if the index matches
+        if decryptedix + 1 != Int(index) {
+            print("Index mismatch")
+            return
+        }
+
+        let decryptediBal = Int(dbalance) ?? 0
+        print("Decrypted balance here:", decryptediBal)
+
+        if verifySignature(signature: signature, dataInput: dataInput, index: index) {
+            let newCounter = Int(dataInput)! + decryptediBal
+            print("New balance incremented by:", newCounter)
+            CurrentBalance = String(newCounter)
+
+            if let encryptedData = encryptDataWithPublicKey(data: Data("\(newCounter)".utf8), publicKey: try SecKeyCopyPublicKey(unwrappedPrivateKey)!) {
+                // Save the encrypted data to Keychain
+                modifyKeychainData(key: counterKey, newValue: encryptedData)
+            }
+            
+            let ebalance = loadFromKeychain(key: counterKey)!
+            //decrypt the balance
+            let decryptedData = decryptDataWithPrivateKey(privateKey: unwrappedPrivateKey,data: ebalance)!
+            
+            let decryptedBal = Int(decryptedData)!
+            
+            print("decryped balance  here",decryptedBal)
+            
+            onIndex = String(decryptedix + 1)
+            
+            if let encryptedData = encryptDataWithPublicKey(data: Data("\(decryptedix+1)".utf8), publicKey: try SecKeyCopyPublicKey(unwrappedPrivateKey)!) {
+                // Save the encrypted data to Keychain
+                modifyKeychainData(key: onIndexKey, newValue: encryptedData)
+            }
+        } else {
+            print("Signature verification failed.")
+        }
+    }
+    /*
+    func modifyKeychainData(key: String, data: Data) {
+        // Prepare the query for the keychain
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: Bundle.main.bundleIdentifier ?? "",
+            kSecAttrAccount as String: key
+        ]
+
+        // Create a dictionary for the new data
+        let update: [String: Any] = [
+            kSecValueData as String: data
+        ]
+
+        // Update the keychain data
+        let status = SecItemUpdate(query as CFDictionary, update as CFDictionary)
+
+        // Check the status of the keychain update
+        if status != errSecSuccess {
+            print("Failed to modify Keychain data. Status: \(status)")
+        }
+    }
+*/
+    
+    func verifySignature(signature: String, dataInput: String, index: String) -> Bool {
+        //convert recievrs public key also
+        print("public-key-here",publicKey)
+        guard
+                    let signatureData = Data(base64Encoded: signature),
+                    let amount = Int(dataInput),
+                    let index = Int(index)
+                else {
+                    print("Something fishy with text inputs or loading public key")
+                    return false
+                }
+
+                do {
+                    // Create a public key from the PEM representation
+                    let rpublicKey = try P256.Signing.PublicKey(pemRepresentation: publicKeyString)
+                    let signature = try P256.Signing.ECDSASignature(derRepresentation: signatureData)
+                    print(String(amount)+"-"+String(index))
+                    let serializedData = ( publicKey +  "-" + String(amount) + "-" + String(index)).data(using: .utf8)!
+                    print(serializedData,amount,index)
+                    // Verify the signature and return the result
+                    return rpublicKey.isValidSignature(signature, for: serializedData)
+                } catch {
+                    // Handle errors, such as invalid public key data or other CryptoKit-related issues
+                    print("Error: \(error)")
+                    return false
+                }
+            
+    }
+    
+    func convertHexToP256Signature(hexSignature: String) -> P256.Signing.ECDSASignature? {
+        // Decode the hex string into Data
+        guard let data = Data(hexString: hexSignature) else {
+            return nil
+        }
+
+        do {
+            // Create a P256.Signing.ECDSASignature from the DER representation
+            return try P256.Signing.ECDSASignature(derRepresentation: data)
+        } catch {
+            print("Error creating ECDSA signature:", error)
+            return nil
+        }
+    }
+    
+    private func getPrivateKey() -> SecKey? {
+        let access = SecAccessControlCreateWithFlags(
+                kCFAllocatorDefault,
+                kSecAttrAccessibleWhenUnlockedThisDeviceOnly,
+                .privateKeyUsage,
+                nil
+            )!
+
+            let tag = "myekey"
+
+            // Check if the key already exists
+            let query: NSDictionary = [
+                kSecClass: kSecClassKey,
+                kSecAttrKeyType: kSecAttrKeyTypeECSECPrimeRandom,
+                kSecAttrKeySizeInBits: 256,
+                kSecAttrTokenID: kSecAttrTokenIDSecureEnclave,
+                kSecAttrApplicationTag: tag,
+                //kSecAttrService: serviceIdentifier, // Add service identifier
+                kSecReturnRef: true
+            ]
+
+            var item: CFTypeRef?
+            let status = SecItemCopyMatching(query, &item)
+
+            if status == errSecSuccess {
+                let existingPrivateKey = item as! SecKey
+                // Key already exists, use it
+                print("Using existing private key")
+                return existingPrivateKey
+            }
+
+            print("Private key doesn't exist")
+            //let tag1=tag.data(using: .utf8)!
+            print("Generating new private key")
+
+            let attributes: NSDictionary = [
+                kSecAttrKeyType: kSecAttrKeyTypeECSECPrimeRandom,
+                kSecAttrKeySizeInBits: 256,
+                kSecAttrTokenID: kSecAttrTokenIDSecureEnclave,
+                kSecPrivateKeyAttrs: [
+                    kSecAttrIsPermanent: true,
+                    kSecAttrApplicationTag: tag,
+                    kSecAttrAccessControl: access
+                    //kSecAttrService: serviceIdentifier // Add service identifier
+                ]
+            ]
+
+            var error: Unmanaged<CFError>?
+            guard let privateKey = SecKeyCreateRandomKey(attributes as CFDictionary, &error) else {
+                if let error = error {
+                    print("Failed to create private key. Error: \(error.takeRetainedValue() as Error)")
+                } else {
+                    print("Failed to create private key. Unknown error.")
+                }
+                return nil
+            }
+
+            // Key generated and stored, use it
+            print("Private key generated and stored")
+            return privateKey
+    }
+
+    private func decryptDataWithPrivateKey(privateKey: SecKey, data: Data) -> String? {
+        
+        //let data=UserDefaults.standard.data(forKey: counterKey)!
+        var error: Unmanaged<CFError>?
+        guard let clearText = SecKeyCreateDecryptedData(
+            privateKey,
+            .eciesEncryptionStandardVariableIVX963SHA256AESGCM,
+            data as CFData,
+            &error
+        ) else {
+            print("Decryption failed. Error:", error?.takeRetainedValue() as Any)
+            return nil
+        }
+
+        let clearTextData: Data = clearText as Data
+        if let clearTextString = String(data: clearTextData, encoding: .utf8) {
+            print("Decrypted Plaintext:", clearTextString)
+            return clearTextString
+        } else {
+            print("Failed to convert decrypted data to string.")
+            return nil
+        }
+    }
+    
+    func send(dataInput: String, index: String, rpk: String)
+    {
+        print(dataInput,index,rpk)
+        
+        let sendingBal = Int(dataInput)!
+        //get public and priavte key
+        
+        guard let unwrappedPrivateKey = privateKey else {
+            // Handle the case where privateKey is nil
+            print("Private key is nil.")
+            // You might want to return, throw an error, or handle this case appropriately
+            fatalError("Private key is nil.")
+        }
+
+        
+        
+        
+        let pk = try SecKeyCopyPublicKey(unwrappedPrivateKey)!
+        
+        //let balance=UserDefaults.standard.data(forKey: counterKey)!
+        let ebalance = loadFromKeychain(key: counterKey)!
+        //decrypt the balance
+        let decryptedData = decryptDataWithPrivateKey(privateKey: unwrappedPrivateKey,data: ebalance)!
+        
+        let decryptedBal = Int(decryptedData)!
+        
+        print("decryped balance  here",decryptedBal)
+        
+        
+        if(decryptedBal<sendingBal)
+        {
+            print("not sufficent balance")
+            return
+        }
+        //subtcart
+        
+        let uval = decryptedBal-sendingBal
+        CurrentBalance = "\(uval)"
+        //encrypt balance back
+        if let encryptedData = encryptDataWithPublicKey(data: Data("\(uval)".utf8), publicKey: pk ) {
+            // Save the encrypted data to UserDefaults
+            //UserDefaults.standard.set(encryptedData, forKey: counterKey)
+            modifyKeychainData(key: counterKey, newValue: encryptedData)
+            print("Encrypted new balance Data:", encryptedData, type(of: encryptedData))
+        }
+        //increment off index and store
+        //let  ix=UserDefaults.standard.data(forKey: offIndexKey)!
+        let ix = loadFromKeychain(key: offIndexKey)!
+        //decrypt the balance
+        let decryptedox = decryptDataWithPrivateKey(privateKey: unwrappedPrivateKey,data: ix)!
+        
+        //offIndex = decryptedox
+        
+        print("curent off index",decryptedox)
+        
+        //subtcart
+        let dox = Int(decryptedox)!
+        offIndex = String(dox + 1)
+        
+        let ioi = dox + 1
+        
+        
+        //encrypt balance back
+        if let encryptedData = encryptDataWithPublicKey(data: Data("\(ioi)".utf8), publicKey: try SecKeyCopyPublicKey(unwrappedPrivateKey)!) {
+            // Save the encrypted data to UserDefaults
+            //UserDefaults.standard.set(encryptedData, forKey: offIndexKey)
+            modifyKeychainData(key: offIndexKey, newValue: encryptedData)
+            print("Encrypted new balance Data:", encryptedData, type(of: encryptedData))
+        }
+        
+        print("changed values " ,ioi,uval)
+
+        //sign it and send
+        //1.a prepare message
+        let message=rpk + "-" + index + "-" + dataInput
+        
+        let messageData = message.data(using: .utf8)!
+        
+        var error: Unmanaged<CFError>?
+        let signature = SecKeyCreateSignature(unwrappedPrivateKey, .ecdsaSignatureMessageX962SHA256, messageData as CFData, &error)
+
+        print("signature sending here ",signature,type(of: signature))
+        
+        if let signatureData = signature as Data? {
+            // Here, 'signatureData' is a Swift Data object containing the signature
+            Gsignature=signatureData.base64EncodedString()
+            print("Signature:", signatureData.base64EncodedString())
+        } else {
+            print("Error creating signature:", error ?? "Unknown error")
+        }
+        
+        print("public key here ",publicKey)
+
+        
+        
+        
+        
+        
+    }
+    
+    func verifyAndIncrementCounter(signature: String, dataInput: String, index: String, rpk: String)
+    {
+        
+        
+        //2.get publicKey
+        guard let unwrappedPrivateKey = privateKey else {
+            // Handle the case where privateKey is nil
+            print("Private key is nil.")
+            // You might want to return, throw an error, or handle this case appropriately
+            fatalError("Private key is nil.")
+        }
+        
+        
+        
+        let ebalance = loadFromKeychain(key: counterKey)!
+        let eoindex  = loadFromKeychain(key: offIndexKey)!
+        
+        let balance = decryptDataWithPrivateKey(privateKey: unwrappedPrivateKey, data: ebalance)
+        let oindex = decryptDataWithPrivateKey(privateKey: unwrappedPrivateKey, data: eoindex)
+
+        guard let decryptedData = oindex else {
+            print("Error decrypting data.")
+            // Handle the error appropriately
+            return
+        }
+
+        // Attempt to convert the decrypted data to an integer
+        guard let decryptedInteger = Int(decryptedData) else {
+            print("Decrypted data is not a valid integer.")
+            // Handle the invalid data appropriately
+            return
+        }
+
+        // Check if the decrypted integer matches the target
+         // Replace with your desired target integer
+        if decryptedInteger != Int(index) {
+            print("Index mismatch")
+            return
+            // Perform actions if the values match
+        }
+        
+        
+        
+        
+        //3.verify signature from sender public key
+        print("public key string",publicKey)
+        let message =  publicKey + "-" + index + "-" + dataInput
+        //convert receiver public key into seckKey
+        
+        guard let pkd = Data(base64Encoded: rpk) else {
+                print("Error decoding Base64 string.")
+                return
+            }
+        print("pkd here ",pkd)
+        
+        var error: Unmanaged<CFError>?
+            guard let pkds = SecKeyCreateWithData(pkd as CFData, [
+                kSecAttrKeyType: kSecAttrKeyTypeEC,
+                kSecAttrKeyClass: kSecAttrKeyClassPublic
+            ] as CFDictionary, &error) else {
+                print("Error creating public key:", error?.takeRetainedValue() ?? "Unknown error")
+                return
+            }
+        
+        //match the index here
+        
+        
+
+
+        print("pkds",pkds)
+        
+        let messageData = message.data(using: .utf8)!
+        let signaturedata = Data(base64Encoded: signature)!
+        let isVerified = SecKeyVerifySignature(pkds, .ecdsaSignatureMessageX962SHA256, messageData as CFData, signaturedata as CFData, &error)
+    
+        //increse balance and counter
+        print(isVerified)
+        
+        if(!isVerified)
+        {
+            print("error verifying")
+            return
+        }
+        
+        //let counter = UserDefaults.standard.data(forKey: counterKey)!
+        //print("encrypted retrived counter",counter)
+    
+
+        let bal: Int
+
+        // Safely unwrap optional values and attempt to convert them to integers
+        if let balanceString = balance, let dataInputInt = Int(dataInput) {
+            if let balanceInt = Int(balanceString) {
+                // Calculate the new balance
+                bal = balanceInt + dataInputInt
+                CurrentBalance = String(bal)
+                
+                if let ueb=encryptDataWithPublicKey(data: Data("\(bal)".utf8), publicKey: try SecKeyCopyPublicKey(unwrappedPrivateKey)!)
+                
+                {modifyKeychainData(key: counterKey, newValue: ueb)}
+                
+            } else {
+                print("Failed to convert balance to Int")
+                return
+            }
+        } else {
+            print("Balance or dataInput is nil")
+            return
+        }
+
+        let ox: Int
+
+        // Safely unwrap optional values and attempt to convert them to integers
+        if let balanceString = oindex{
+            if let balanceInt = Int(balanceString) {
+                // Calculate the new balance
+                ox = balanceInt + 1
+                offIndex = String(ox)
+                if let eix = encryptDataWithPublicKey(data: Data("\(ox)".utf8), publicKey: try SecKeyCopyPublicKey(unwrappedPrivateKey)!)
+                {
+                    modifyKeychainData(key: offIndexKey, newValue: eix)}
+            } else {
+                print("Failed to convert balance to Int")
+                return
+            }
+        } else {
+            print("Balance or dataInput is nil")
+            return
+        }
+        
+        
+        
+        
+        
+        
+    }
+
+    func getPublicKey() -> String
+    {
+        //let privateKey=getPrivateKey()!
+        let privateKey = getPrivateKey()!
+        let pk = try SecKeyCopyPublicKey(privateKey)!
+        var error: Unmanaged<CFError>?
+                    guard let publicKeyData = SecKeyCopyExternalRepresentation(pk, &error) as Data? else {
+                        print("Error converting public key:")
+                        return "nothing"
+                    }
+
+                    // Convert the public key data to base64 for display
+        publicKey = publicKeyData.base64EncodedString()
+        print("public-key-here",publicKey)
+        return publicKey
+        
+    }
+    
+
+    private func encryptDataWithPublicKey(data: Data, publicKey: SecKey) -> Data? {
+        print("public key -----",publicKey)
+        guard let encryptedData = try? SecKeyCreateEncryptedData(
+            publicKey,
+            .eciesEncryptionStandardVariableIVX963SHA256AESGCM,
+            data as CFData,
+            nil
+        ) as CFData? else {
+            print("Encryption failed.")
+            return nil
+        }
+
+        print("Encrypted Data:", encryptedData, type(of: encryptedData))
+        return encryptedData as Data
+    }
+    
+
+}
+
+struct ContentView: View {
+    @ObservedObject var enclaveManager = SecureEnclaveManager()
+    @State private var signatureInput: String = ""
+    @State private var dataInput: String = ""
+    @State private var dataIndex: String = ""
+    @State private var rpk: String = ""
+    //@State private var oidx: String = ""
+    
+    var body: some View {
+        VStack {
+            Text("publicKey : \(enclaveManager.publicKey)")
+
+                        // ... rest of your view code
+
+            Button("Copy Public Key") {
+                UIPasteboard.general.string = enclaveManager.publicKey }
+            
+            
+            
+            HStack{
+                Text("Balance: \(enclaveManager.CurrentBalance)")
+                //Text("Current Balance: \(enclaveManager.decryptedMessage)")
+                
+                Text("offIndex : \(enclaveManager.offIndex)")
+                Text("onIndex : \(enclaveManager.onIndex)")
+                
+            }
+            TextField("Enter Signature", text: $signatureInput)
+                .textFieldStyle(RoundedBorderTextFieldStyle())
+                .padding()
+            
+            TextField("Enter Amount", text: $dataInput)
+                .textFieldStyle(RoundedBorderTextFieldStyle())
+                .padding()
+            
+            TextField("Enter Index", text: $dataIndex)
+                .textFieldStyle(RoundedBorderTextFieldStyle())
+                .padding()
+            
+            TextField("Enter receivers/senders publick key", text: $rpk)
+                .textFieldStyle(RoundedBorderTextFieldStyle())
+                .padding()
+            
+            
+            HStack {
+                Button("FromServer") {
+                    enclaveManager.verifyAndIncrementCounterServer(signature: signatureInput, dataInput: dataInput, index: dataIndex)
+                }
+                .padding()
+                
+                Button("FromSender") {
+                    enclaveManager.verifyAndIncrementCounter(signature: signatureInput, dataInput: dataInput, index: dataIndex, rpk: rpk)
+                }
+                .padding()
+                
+                Button("send") {
+                    enclaveManager.send(dataInput: dataInput, index: dataIndex, rpk: rpk)
+                }
+                .padding()
+            }
+            .padding()
+            
+            //Text("Signature : \(enclaveManager.Gsignature)")
+            Text("Signature : \(enclaveManager.Gsignature)")
+            
+            Button("Copy Signature") {
+                UIPasteboard.general.string = enclaveManager.Gsignature }
+            
+            
+        }
+    }
+}
+
+struct ContentView_Previews: PreviewProvider {
+    static var previews: some View {
+        ContentView()
+    }
+}
+
+extension Data {
+    init(hexEncoded string: String) throws {
+        var hex = string
+        if hex.hasPrefix("0x") {
+            hex = String(hex.dropFirst(2))
+        }
+
+        guard hex.count % 2 == 0 else {
+            throw EncryptionError.encryptionFailed
+        }
+
+        self.init()
+        reserveCapacity(hex.count / 2)
+        var startIndex = hex.startIndex
+        while startIndex < hex.endIndex {
+            let endIndex = hex.index(startIndex, offsetBy: 2)
+            let byte = hex[startIndex ..< endIndex]
+            guard var num = UInt8(byte, radix: 16) else {
+                throw EncryptionError.encryptionFailed
+            }
+            append(&num, count: 1)
+            startIndex = endIndex
+        }
+    }
+}
+extension Data {
+    init?(hexString: String) {
+        var hex = hexString
+        var data = Data()
+
+        while hex.count > 0 {
+            let subIndex = hex.index(hex.startIndex, offsetBy: 2)
+            let byte = hex[..<subIndex]
+            hex = String(hex[subIndex...])
+
+            if var num = UInt8(byte, radix: 16) {
+                data.append(&num, count: 1)
+            } else {
+                return nil
+            }
+        }
+
+        self = data
+    }
+}
+
+
+
+
